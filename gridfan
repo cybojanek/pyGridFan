@@ -30,52 +30,113 @@ def error(s):
     sys.stderr.write("%s\n" % s)
 
 
-def ping():
-    debug("Sending ping...")
-    s.write([0xc0])
-    s.flush()
-    reply = s.read(1)
-    debug("Got ping reply: %s" % (reply))
-    if len(reply) != 1 or reply[0] != 0x21:
-        raise Exception("Uknown ping reply: %s" % reply)
-    return
+class GridFanController(object):
+
+    def __init__(self, device_path):
+        """Arguments:
+
+        device_path (str): path to GridFan device, i.e. /dev/ttyACM0
+
+        Raises:
+            serial.serialutil.SerialException on IO error
+
+        """
+        super(GridFanController, self).__init__()
+        self.device_path = device_path
+        self.serial = serial.Serial(self.device_path, 4800, timeout=3.0)
+
+        # Discard any stale IO buffers
+        termios.tcflush(self.serial.fd, termios.TCIOFLUSH)
+
+    def ping(self):
+        """Ping the device to check its available
+
+        Returns:
+            None
+
+        Raises:
+            serial.serialutil.SerialException on IO Error
+
+        """
+        debug("Sending ping...")
+        self.serial.write([0xc0])
+        self.serial.flush()
+        reply = self.serial.read(1)
+        debug("Got ping reply: %s" % (reply))
+        if len(reply) != 1 or reply[0] != 0x21:
+            raise Exception("Uknown ping reply: %s" % reply)
+
+    def get_fan_speed(self, number):
+        """Get the fan speed in RPM
+
+        Arguments:
+            number (int): of fan, from 1 to 6 inclusive
+
+        Returns:
+            (int) RPM speed
+
+        Raises:
+            ValueError on bad input
+            serial.serialutil.SerialException on IO Error
+
+        """
+        debug("Getting fan speed for %s" % number)
+
+        if not (1 <= number <= 6):
+            raise ValueError("Bad fan number: %s" % number)
+
+        self.serial.write([0x8a, number])
+        self.serial.flush()
+        reply = self.serial.read(5)
+        debug("Got fan speed reply: %s" % (reply))
+        if len(reply) != 5 or reply[0:3] != b'\xc0\x00\x00':
+            raise Exception("Uknown get fan speed reply: %s" % reply)
+        rpm = (reply[3] << 8) | (reply[4])
+        debug("Fan speed: %s %s" % (number, rpm))
+        return rpm
+
+    def set_fan_speed(self, number, speed):
+        """Set the fan speed in percentage
 
 
-def get_fan_speed(number):
-    debug("Getting fan speed for %s" % number)
+        Arguments:
+            number (int): of fan, from 1 to 6 inclusive
+            speed (int): of fan, 0, or from 20 to 100 inclusive
 
-    if not (1 <= number <= 6):
-        raise ValueError("Bad fan number: %s" % number)
+        Returns:
+            None
 
-    s.write([0x8a, number])
-    s.flush()
-    reply = s.read(5)
-    debug("Got fan speed reply: %s" % (reply))
-    if len(reply) != 5 or reply[0:3] != b'\xc0\x00\x00':
-        raise Exception("Uknown get fan speed reply: %s" % reply)
-    rpm = (reply[3] << 8) | (reply[4])
-    debug("Fan speed: %s %s" % (number, rpm))
-    return rpm
+        Raises:
+            ValueError on bad input
+            serial.serialutil.SerialException on IO Error
 
+        """
+        debug("Setting fan speed for %s to %s" % (number, speed))
 
-def set_fan_speed(number, speed):
-    debug("Setting fan speed for %s to %s" % (number, speed))
+        if not (1 <= number <= 6):
+            raise ValueError("Bad fan number: %s" % number)
 
-    if not (1 <= number <= 6):
-        raise ValueError("Bad fan number: %s" % number)
+        if speed != 0 and not (20 <= speed <= 100):
+            raise ValueError("Bad fan speed: %s" % speed)
 
-    if speed != 0 and not (20 <= speed <= 100):
-        raise ValueError("Bad fan speed: %s" % speed)
+        # I have no fucking clue this isn't just a single byte...
+        self.serial.write([0x44, number, 0xc0, 0x00, 0x00,
+                 0 if speed is 0 else (0x2 + speed // 10),
+                 (speed % 10) * 0x10])
+        self.serial.flush()
+        reply = self.serial.read(1)
+        debug("Got set fan speed reply: %s" % (reply))
+        if len(reply) != 1 or reply[0] != 0x01:
+            raise Exception("Uknown set fan speed reply: %s" % reply)
 
-    # I have no fucking clue this isn't just a single byte...
-    s.write([0x44, number, 0xc0, 0x00, 0x00,
-             0 if speed is 0 else (0x2 + speed // 10),
-             (speed % 10) * 0x10])
-    s.flush()
-    reply = s.read(1)
-    debug("Got set fan speed reply: %s" % (reply))
-    if len(reply) != 1 or reply[0] != 0x01:
-        raise Exception("Uknown set fan speed reply: %s" % reply)
+    def close(self):
+        self.serial.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        self.close()
 
 
 def print_usage():
@@ -93,49 +154,45 @@ def main():
         sys.exit(1)
 
     # Open device
-    dev_path = args[0]
-    s = serial.Serial(dev_path, 4800, timeout=3.0)
+    with GridFanController(args[0]) as controller:
 
-    # Discard any stale IO buffers
-    termios.tcflush(s.fd, termios.TCIOFLUSH)
+        # Ping to check device is accessible
+        controller.ping()
 
-    # Ping to check device is accessible
-    ping()
+        # Get command
+        command = args[1]
 
-    # Get command
-    command = args[1]
+        if command == "get":
+            if (len(args) != 3):
+                print_usage()
+                sys.exit(1)
 
-    if command == "get":
-        if (len(args) != 3):
+            target = args[2]
+
+            if target == "all":
+                for x in range(1, 7):
+                    print("%s %s" % (x, controller.get_fan_speed(x)))
+            else:
+                print("%s %s" % (target, controller.get_fan_speed(int(target))))
+
+        elif command == "set":
+            if (len(args) != 4):
+                print_usage()
+                sys.exit(1)
+
+            target = int(args[2])
+            value = int(args[3])
+
+            controller.set_fan_speed(target, value)
+
+        elif command == "help":
             print_usage()
-            sys.exit(1)
+            sys.exit(0)
 
-        target = args[2]
-
-        if target == "all":
-            for x in range(1, 7):
-                print("%s %s" % (x, get_fan_speed(x)))
         else:
-            print("%s %s" % (target, get_fan_speed(value)))
-
-    elif command == "set":
-        if (len(args) != 4):
             print_usage()
             sys.exit(1)
 
-        target = int(args[2])
-        value = int(args[3])
-
-        set_fan_speed(target, value)
-
-    elif command == "help":
-        print_usage()
-        sys.exit(0)
-    else:
-        print_usage()
-        sys.exit(1)
-
-    s.close()
 
 if __name__ == '__main__':
     main()

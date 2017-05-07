@@ -1,4 +1,8 @@
-# pyGridfan
+# pyGridFan
+
+Python command line controller for NZXT GRID+ V2
+
+Tested on Linux
 
 Requires python3 and pyserial package
 
