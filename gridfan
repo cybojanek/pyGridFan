@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+#
+# Copyright (c) 2017 Jan Kasiak
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
+
+import serial
+import sys
+import termios
+
+DEBUG = False
+
+def debug(s):
+    if DEBUG:
+        sys.stderr.write("%s\n" % s)
+
+
+def error(s):
+    sys.stderr.write("%s\n" % s)
+
+
+def ping():
+    debug("Sending ping...")
+    s.write([0xc0])
+    s.flush()
+    reply = s.read(1)
+    debug("Got ping reply: %s" % (reply))
+    if len(reply) != 1 or reply[0] != 0x21:
+        raise Exception("Uknown ping reply: %s" % reply)
+    return
+
+
+def get_fan_speed(number):
+    debug("Getting fan speed for %s" % number)
+
+    if not (1 <= number <= 6):
+        raise ValueError("Bad fan number: %s" % number)
+
+    s.write([0x8a, number])
+    s.flush()
+    reply = s.read(5)
+    debug("Got fan speed reply: %s" % (reply))
+    if len(reply) != 5 or reply[0:3] != b'\xc0\x00\x00':
+        raise Exception("Uknown get fan speed reply: %s" % reply)
+    rpm = (reply[3] << 8) | (reply[4])
+    debug("Fan speed: %s %s" % (number, rpm))
+    return rpm
+
+
+def set_fan_speed(number, speed):
+    debug("Setting fan speed for %s to %s" % (number, speed))
+
+    if not (1 <= number <= 6):
+        raise ValueError("Bad fan number: %s" % number)
+
+    if speed != 0 and not (20 <= speed <= 100):
+        raise ValueError("Bad fan speed: %s" % speed)
+
+    # I have no fucking clue this isn't just a single byte...
+    s.write([0x44, number, 0xc0, 0x00, 0x00,
+             0 if speed is 0 else (0x2 + speed // 10),
+             (speed % 10) * 0x10])
+    s.flush()
+    reply = s.read(1)
+    debug("Got set fan speed reply: %s" % (reply))
+    if len(reply) != 1 or reply[0] != 0x01:
+        raise Exception("Uknown set fan speed reply: %s" % reply)
+
+
+def print_usage():
+    print("gridfan DEVICE_PATH help")
+    print("gridfan DEVICE_PATH get all|1|2|3|4|5|6")
+    print("gridfan DEVICE_PATH set 1|2|3|4|5|6 0|20|21|...|100")
+
+
+def main():
+    # Get arguments - don't need self path
+    args = sys.argv[1:]
+
+    if (len(args) < 2):
+        print_usage()
+        sys.exit(1)
+
+    # Open device
+    dev_path = args[0]
+    s = serial.Serial(dev_path, 4800, timeout=3.0)
+
+    # Discard any stale IO buffers
+    termios.tcflush(s.fd, termios.TCIOFLUSH)
+
+    # Ping to check device is accessible
+    ping()
+
+    # Get command
+    command = args[1]
+
+    if command == "get":
+        if (len(args) != 3):
+            print_usage()
+            sys.exit(1)
+
+        target = args[2]
+
+        if target == "all":
+            for x in range(1, 7):
+                print("%s %s" % (x, get_fan_speed(x)))
+        else:
+            print("%s %s" % (target, get_fan_speed(value)))
+
+    elif command == "set":
+        if (len(args) != 4):
+            print_usage()
+            sys.exit(1)
+
+        target = int(args[2])
+        value = int(args[3])
+
+        set_fan_speed(target, value)
+
+    elif command == "help":
+        print_usage()
+        sys.exit(0)
+    else:
+        print_usage()
+        sys.exit(1)
+
+    s.close()
+
+if __name__ == '__main__':
+    main()
