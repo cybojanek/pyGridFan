@@ -38,12 +38,15 @@ class GridFanController(object):
         device_path (str): path to GridFan device, i.e. /dev/ttyACM0
 
         Raises:
-            serial.serialutil.SerialException on IO error
+            IOError
 
         """
         super(GridFanController, self).__init__()
-        self.device_path = device_path
-        self.serial = serial.Serial(self.device_path, 4800, timeout=3.0)
+        try:
+            self.device_path = device_path
+            self.serial = serial.Serial(self.device_path, 4800, timeout=3.0)
+        except serial.serialutil.SerialException as e:
+            raise IOError(e)
 
         # Discard any stale IO buffers
         termios.tcflush(self.serial.fd, termios.TCIOFLUSH)
@@ -55,16 +58,21 @@ class GridFanController(object):
             None
 
         Raises:
-            serial.serialutil.SerialException on IO Error
+            IOError
 
         """
         debug("Sending ping...")
-        self.serial.write([0xc0])
-        self.serial.flush()
-        reply = self.serial.read(1)
+        reply = None
+        try:
+            self.serial.write([0xc0])
+            self.serial.flush()
+            reply = self.serial.read(1)
+        except serial.serialutil.SerialException as e:
+            raise IOError(e)
+
         debug("Got ping reply: %s" % (reply))
         if len(reply) != 1 or reply[0] != 0x21:
-            raise Exception("Uknown ping reply: %s" % reply)
+            raise IOError("Uknown ping reply: %s" % reply)
 
     def get_fan_speed(self, number):
         """Get the fan speed in RPM
@@ -77,7 +85,7 @@ class GridFanController(object):
 
         Raises:
             ValueError on bad input
-            serial.serialutil.SerialException on IO Error
+            IOError
 
         """
         debug("Getting fan speed for %s" % number)
@@ -85,12 +93,17 @@ class GridFanController(object):
         if not (1 <= number <= 6):
             raise ValueError("Bad fan number: %s" % number)
 
-        self.serial.write([0x8a, number])
-        self.serial.flush()
-        reply = self.serial.read(5)
+        reply = None
+        try:
+            self.serial.write([0x8a, number])
+            self.serial.flush()
+            reply = self.serial.read(5)
+        except serial.serialutil.SerialException as e:
+            raise IOError(e)
+
         debug("Got fan speed reply: %s" % (reply))
         if len(reply) != 5 or reply[0:3] != b'\xc0\x00\x00':
-            raise Exception("Uknown get fan speed reply: %s" % reply)
+            raise IOError("Uknown get fan speed reply: %s" % reply)
         rpm = (reply[3] << 8) | (reply[4])
         debug("Fan speed: %s %s" % (number, rpm))
         return rpm
@@ -108,7 +121,7 @@ class GridFanController(object):
 
         Raises:
             ValueError on bad input
-            serial.serialutil.SerialException on IO Error
+            IOError
 
         """
         debug("Setting fan speed for %s to %s" % (number, speed))
@@ -120,14 +133,18 @@ class GridFanController(object):
             raise ValueError("Bad fan speed: %s" % speed)
 
         # I have no fucking clue this isn't just a single byte...
-        self.serial.write([0x44, number, 0xc0, 0x00, 0x00,
-                 0 if speed is 0 else (0x2 + speed // 10),
-                 (speed % 10) * 0x10])
-        self.serial.flush()
-        reply = self.serial.read(1)
+        reply = None
+        try:
+            self.serial.write([0x44, number, 0xc0, 0x00, 0x00,
+                               0 if speed is 0 else (0x2 + speed // 10),
+                               (speed % 10) * 0x10])
+            self.serial.flush()
+            reply = self.serial.read(1)
+        except serial.serialutil.SerialException as e:
+            raise IOError(e)
         debug("Got set fan speed reply: %s" % (reply))
         if len(reply) != 1 or reply[0] != 0x01:
-            raise Exception("Uknown set fan speed reply: %s" % reply)
+            raise IOError("Uknown set fan speed reply: %s" % reply)
 
     def close(self):
         self.serial.close()
